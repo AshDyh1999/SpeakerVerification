@@ -208,6 +208,29 @@ float* dct(float* feat, int numframes) {
     return f;
 }
 
+float* dct_frame(float* feat) {
+    float* f = (float*)malloc(sizeof(float)* 13);
+    int k, n;
+    float A, s;
+    for (k = 0; k < 13; k++)
+    {
+        s = 0;
+        if (k == 0)
+            A = sqrt(1.0 / 26); //计算k=0时的系数
+        else
+            A = sqrt(2.0 / 26); //计算k!=0时的系数
+        for (n = 0; n < 26; n++)
+        {   
+            //printf("%f,", cos((PI * (2 * n + 1) * k) / (2 * 26)));
+            float tmp = (*(feat + n)) * dct_arg[k * 26 + n];
+            s = s + tmp;	//累加求和
+        }
+        (*(f + k)) = A * s;	//X[k]等于累和结果s乘以系数A
+        //printf("\n");
+    }
+    return f;
+}
+
 float* lifter(float* feat, int frame_num, int ceplifter) {
     int nframes = frame_num;
     float lift[13] = { 1.00000000,2.56546330,4.09905815,5.56956530,6.94704914,8.20346832,9.31324577,10.2537889,11.0059519,11.5544224,11.8880358,12.0000000,11.8880358 };
@@ -222,12 +245,28 @@ float* lifter(float* feat, int frame_num, int ceplifter) {
     return feat;
 }
 
+float* lifter_frame(float* feat, int ceplifter) {
+    float lift[13] = { 1.00000000,2.56546330,4.09905815,5.56956530,6.94704914,8.20346832,9.31324577,10.2537889,11.0059519,11.5544224,11.8880358,12.0000000,11.8880358 };
+    int j;
+    for (j = 0; j < 13; j++)
+    {
+        *(feat + j) = (*(feat + j)) * lift[j];
+
+    }
+    return feat;
+}
+
 float* appendEnergy(float* feat, float* energy, int frame_num) {
     int i;
     for (i = 0; i < frame_num; i++)
     {
         *(feat + i * 13) = log(*(energy + i));
     }
+    return feat;
+}
+
+float* appendEnergy_frame(float* feat, float energy) {
+    *(feat) = log(energy);
     return feat;
 }
 
@@ -255,6 +294,32 @@ short* openwav(char* filename, int* fsize) {
     }
     fclose(fp);
     return sig;
+}
+
+void* load_model(char* filepath, float* mu, float* cov, float* weights) {
+    FILE* fp = NULL;
+    int i;
+    //打开文件
+    fp = fopen(filepath, "rb");
+    //提取数据
+    fread(mu, sizeof(float), 208, fp);
+    fread(cov, sizeof(float), 2704, fp);
+    fread(weights, sizeof(float), 16, fp);
+    //关闭文件
+    fclose(fp);
+}
+
+void* save_model(char* filepath, float* mu, float* cov, float* weights) {
+    FILE* fp = NULL;
+    int i;
+    //创建文件
+    fp = fopen(filepath, "wb");
+    //存储数据
+    fwrite(mu, sizeof(float), 208, fp);
+    fwrite(cov, sizeof(float), 2704, fp);
+    fwrite(weights, sizeof(float), 16, fp);
+    //关闭文件
+    fclose(fp);
 }
 
 float* mfcc(short* signal, int fsize, int samplerate, float winlen, float winstep, int numcep, float* winfunc, float preemph) {
@@ -319,7 +384,7 @@ float* mfcc(short* signal, int fsize, int samplerate, float winlen, float winste
     //读取mel滤波==========================================================
     Matrix A, A_t, B, FEAT;
     A = Create_Matrix(26, 257);
-    SetData_Matrix(A, mel);
+    SetData_Matrix(A, mel_odd);
     printf("A(1, 1) = %f, A(1, 2) = %f, A(1, 3) = %f\n", PickInMat(A, 1, 1), PickInMat(A, 1, 2), PickInMat(A, 1, 3));
     A_t = Trans_Matrix(A);
     printf("row = %d, col = %d\n", A_t->row, A_t->column);
@@ -365,32 +430,297 @@ float* mfcc(short* signal, int fsize, int samplerate, float winlen, float winste
     return feat_mfcc;
 }
 
-float* mfcc_frame(short* signal_frame, int winlenth, float* winfunc, float* last_point) {
-    
-    return mfcc
+float* mfcc_frame(short* signal_frame, float* new_signal, int winlenth, float* winfunc, short last_point) {
+    //预加重
+    int i = 0;
+    //new_signal = (float*)malloc(sizeof(float) * winlenth);
+    *new_signal = *(signal_frame)-last_point * 0.97;
+
+    for (i = 1; i < winlenth; i++) {
+        (float)(*(new_signal + i)) = (float)(*(signal_frame + i)) - (float)(*(signal_frame + i - 1)) * 0.97;
+    }
+    //快速傅里叶变化=======================================================
+    int j;
+    float abs_fft;
+    float energy = 0.0;
+
+    if (winlenth < NFFT) {
+        for (j = 0; j < winlenth; j++) {
+            //temp[j] = *(frame + i * winlenth + j);
+            x[j].real = *(new_signal +  j);
+            x[j].imag = 0.0;
+        }
+        for (j = 0; j < NFFT - winlenth; j++) {
+            //temp[winlenth + j] = 0.0;
+            x[winlenth + j].real = 0.0;
+            x[winlenth + j].imag = 0.0;
+        }
+    }
+    else {
+        for (j = 0; j < NFFT; j++) {
+            //temp[j] = *(frame + i * winlenth + j);
+            x[j].real = *(new_signal + j);
+            x[j].imag = 0.0;
+        }
+    }
+    transform();//变换序列顺序
+    fft();//蝶形运算
+
+    float* complex_spec = (float*)malloc(sizeof(float) * ((NFFT / 2 + 1)));
+    for (j = 0; j < NFFT / 2 + 1; j++)
+    {
+        //*(complex_spec + j + i * (NFFT / 2 + 1)) = *(temp + j);
+        abs_fft = sqrt(x[j].real * x[j].real + x[j].imag * x[j].imag);
+        //printf("<%d>%6f|\t", j, abs_fft*abs_fft/NFFT);
+        *(complex_spec + j) = abs_fft * abs_fft / NFFT;
+        energy += abs_fft * abs_fft / NFFT;
+    }
+
+    //读取mel滤波===mel_odd,mel_even==========================================================
+    float* FEAT = (float*)malloc(sizeof(float) * 26);
+    float temp = 0.0;
+    short pre_flag = 1, flag = 0;
+    j = 0;
+    for ( i = 0; i < 257; i++)
+    {
+        //确定当前flag状态,flag = 1 表示间隔
+        if (mel_even[i] == 0.) {
+            flag = 1;
+        }
+        else {
+            flag = 0;
+        }
+        //对应flag操作
+        if (flag == 0) {
+            temp += mel_even[i] * *(complex_spec + i);
+        }
+        else if (flag == 1 && pre_flag == 0) {
+            *(FEAT + j) = log(temp);
+            //printf("%f", FEAT);
+            j += 2;
+            temp = 0.0;
+        }
+        pre_flag = flag;
+    }
+    pre_flag = 1;
+    flag = 0;
+    j = 1;
+    for (i = 0; i < 257; i++)
+    {
+        //确定当前flag状态,flag = 1 表示间隔
+        if (mel_odd[i] == 0.) {
+            flag = 1;
+        }
+        else {
+            flag = 0;
+        }
+        //对应flag操作
+        if (flag == 0) {
+            temp += mel_odd[i] * *(complex_spec + i);
+        }
+        else if (flag == 1 && pre_flag == 0) {
+            *(FEAT + j) = log(temp);
+            //printf("%f", FEAT);
+            j += 2;
+            temp = 0.0;
+        }
+        pre_flag = flag;
+    }
+
+    //dct=============================================================
+    float* feat_mfcc;
+    feat_mfcc = dct_frame(FEAT);
+    //用倒谱提升器，得到倒谱的矩阵。这有增加高频DCT系数的作用
+    feat_mfcc = lifter_frame(feat_mfcc, CEPLIFTER);
+    //用帧能量的对数替换第一个倒谱系数
+    *(feat_mfcc) = log(energy);
+    //printf("mfcc[0] = %f\n", feat_mfcc[0]);
+    return feat_mfcc;
 }
 
+void map_adaptation(float* mfcc, float* mu, float* pi , float* cov, short threshold, short max_iterations, short K, short rf) {
+    float old_likelihood = 9999;
+    float new_likelihood = 0;
+    short iterations = 0;
+    
+    float* num = (float*)malloc(sizeof(float) * K);
+    float* new_mu = (float*)malloc(sizeof(float) * K * 13);
+    
+    int i, j;
+    float sum = 0.0;
+    float adaption = 0.;
+    float temp = 0.;
+
+    while (fabs((double)old_likelihood - (double)new_likelihood) > threshold && iterations < max_iterations)
+    {
+        iterations += 1;
+        old_likelihood = new_likelihood;
+        printf("epoch:%d\n", iterations);
+        //float* num = (float*)malloc(sizeof(float) * K);
+        for ( i = 0; i < K; i++)
+        {
+            *(num + i) = *(pi + i) * unit_gaussian(mfcc, *(mu + i), *(cov + i));
+            sum += *(num + i);
+        }
+        //float* new_mu = (float*)malloc(sizeof(float) * K * 13);
+
+        for ( i = 0; i < K; i++)
+        {
+            *(num + i) /= sum;
+            for (j = 0; j < 13; j++)
+            {
+                *(new_mu + i * 13 + j) += *(num + i) + *(mfcc + j);
+            }
+        }
+        //float* adaptation = (float*)malloc(sizeof(float) * K);
+        for (i = 0; i < K; i++)
+        {
+            //*(adaptation + i) = *(num + i) / (*(num + i) + rf);
+            adaption = *(num + i) / (*(num + i) + rf);
+            for ( j = 0; j < 13; j++)
+            {
+                //temp = (1 - *(adaptation + i)) * (*(mu + i * 13 * j));
+                temp = (1 - adaption) * (*(mu + i * 13 * j));
+                //*(mu + i * 13 * j) = temp + (*(adaptation + i) * (*(new_mu + i * 13 + j)));
+                *(mu + i * 13 * j) = temp + adaption * (*(new_mu + i * 13 + j));
+            }
+        }
+        new_likelihood = calculate_likelihood(13, K, mfcc, mu, cov, pi);
+    }
+
+    free(new_mu);
+    free(num);
+    //save_model("map", mu, cov, pi);
+}
+
+float test_model(short start, short end, char* ubm_filepath, char* map_filepath, char* mfcc_filepath) {
+    FILE* fp = NULL;
+    float score;
+    short n;
+    n = end - start;
+    //加载ubm数据
+    float* ubm_mu = (float*)malloc(sizeof(float) * 208);
+    float* ubm_cov = (float*)malloc(sizeof(float) * 2704);
+    float* ubm_we = (float*)malloc(sizeof(float) * 16);
+    load_model(ubm_filepath, ubm_mu, ubm_cov, ubm_we);
+    //加载map数据
+    float* map_mu = (float*)malloc(sizeof(float) * 208);
+    float* map_cov = (float*)malloc(sizeof(float) * 2704);
+    float* map_we = (float*)malloc(sizeof(float) * 16);
+    load_model(map_filepath, map_mu, map_cov, map_we);
+    //加载mfcc数据
+    fp = fopen(mfcc_filepath, "wb");
+    float* data = (float*)malloc(sizeof(float) * n * 13);
+    fread(data, sizeof(float), n * 13, fp);
+    //计算
+    score = calculate_likelihood(n, 16, data, map_mu, map_cov, map_we) - calculate_likelihood(n, 16, data, ubm_mu, ubm_cov, ubm_we);
+    //关闭文件并返回
+    fclose(fp);
+
+    free(data);
+    free(ubm_cov);
+    free(ubm_mu);
+    free(ubm_we);
+    free(map_cov);
+    free(map_mu);
+    free(map_we);
+    return score;
+}
+
+//void main() {
+//	printf("program start!\n");
+//    //读音频=============================================================
+//    char* filename = "testwav";
+//    short* sig;
+//    int fsize;
+//    sig = openwav(filename, &fsize);
+//	//printf("%d\n", sig[0]);
+//
+//	//提取mfcc===========================================================
+//	int samplerate = 16000;
+//	float winlen = 0.025;
+//    float winstep = 0.01;
+//    float preemph = 0.97;
+//	float* winfunc = NULL;
+//    int numcep = 13;
+//
+//    float* feat;
+//    feat = mfcc(sig, fsize, samplerate, winlen, winstep, numcep, winfunc, preemph);
+//	
+//    printf("program end!\n");
+//	return;
+//}
+//
+
 void main() {
-	printf("program start!\n");
+    printf("program start!\n");
     //读音频=============================================================
     char* filename = "testwav";
     short* sig;
     int fsize;
     sig = openwav(filename, &fsize);
-	//printf("%d\n", sig[0]);
+    //printf("%d\n", sig[0]);
+    
+    //单帧处理 fsize=15360 
+    int frames = 0;
+    short flag = 0;
+    fsize -= 240;
+    frames = fsize / 160;
+    flag = fsize % 160;
 
-	//提取mfcc===========================================================
-	int samplerate = 16000;
-	float winlen = 0.025;
-    float winstep = 0.01;
-    float preemph = 0.97;
-	float* winfunc = NULL;
-    int numcep = 13;
+    if (flag) {
+        frames += 1;
+    }
+    int start = 0, i, j;
+    int winlength = 400;
+    short last_point = 0;
+    short* sig_frame;
+    float* new_signal;
+    float* feat = NULL;
+    sig_frame = (short*)malloc(sizeof(short) * 400);
+    new_signal = (float*)malloc(sizeof(float) * 400);
 
-    float* feat;
-    feat = mfcc(sig, fsize, samplerate, winlen, winstep, numcep, winfunc, preemph);
-	
+    FILE* fp = NULL;
+    fp = fopen("mfcc", "wb");
+    float* mu = (float*)malloc(sizeof(float) * 208);
+    float* cov = (float*)malloc(sizeof(float) * 2704);
+    float* pi = (float*)malloc(sizeof(float) * 16);
+    load_model("ubm", mu, cov, pi);
+    for (i = 0; i < frames; i++)
+    {
+        if (i > 0) {
+            last_point = *(sig + start - 1);
+        }
+        for (j = 0; j < winlength; j++)
+        {
+            *(sig_frame + j) = *(sig + start + j);
+        }
+        if (i == frames - 1) {
+            for (j = 0; j < flag; j++)
+            {
+                *(sig_frame + winlength - flag + j) = (short)0;
+            }
+        }
+        start += 160;
+        feat = mfcc_frame(sig_frame, new_signal, winlength, NULL, last_point);
+        fwrite(mfcc, sizeof(float), 13, fp);
+        map_adaptation(feat, mu, pi, cov, 1, 10, 16, 1);
+       /* if (i == 93) {
+            printf("1");
+        }*/
+    }
+    save_model("map", mu, cov, pi);
+
     printf("program end!\n");
-	return;
+    return;
 }
+
+//[1,2,3,4,5,6,7,8] --> [1, 2-0.97*1, 3-0.97*2, 4-3*0.97, 5-4*0.97, 6 - 5 * 0.97, 7 - 6 * 0.97, 8 - 7 * 0.97]
+//[1, 2, 3, 4] --> 1 - 0.97 * 0, 2 - 1 * 0.97, 3 - 3 * 0.97, 4 - 3 * 0.97
+//[2, 3, 4, 5] --> 2 - 0.97 * 1, 3 - 2 * 0.97, 4 - 3 * 0.97, 5 - 4 * 0.97
+//[3, 4, 5, 6] --> 3 - 0.97 * 2, 4 - 3 * 0.97, 5 - 4 * 0.97, 6 - 5 * 0.97
+//[4, 5, 6, 7]
+//
+//[2-0.97*1,3]
+
 
