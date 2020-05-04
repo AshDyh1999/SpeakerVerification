@@ -270,6 +270,53 @@ float* appendEnergy_frame(float* feat, float energy) {
     return feat;
 }
 
+float unit_gaussian(float* data, float* tmp_mu, float* tmp_cov) {
+    Matrix x, mu, sigma;
+    x = Create_Matrix(1, 13);
+    mu = Create_Matrix(1, 13);
+    sigma = Create_Matrix(13, 13);
+    SetData_Matrix(x, data);
+    SetData_Matrix(mu, tmp_mu);
+    SetData_Matrix(sigma, tmp_cov);
+    Matrix inv_cov = LUInverse_Matrix(sigma);
+    Matrix x_mu = AddorSub_Matrix(x, mu, 1);
+    float D = mu->column;
+    float z = (float)(1 / ((sqrt(pow(2 * PI, D))) * (sqrt(Det_Matrix(sigma)))));
+    Matrix tmp = Mult_Matrix(Mult_Matrix(x_mu, inv_cov), Trans_Matrix(x_mu));
+    float exponent = (float)(exp(-0.5 * (**(tmp->data))));
+
+    return z * exponent;
+}
+
+float calculate_likelihood(int N, int K, float* data, float* mu_k, float* cov_k, float* pi_k) {
+    float log_likelihood = 0;
+    float temp = 0;
+    float tmp_mu[13], tmp_cov[169];
+    for (int i = 0; i < N; i++)
+    {
+        temp = 0;
+        for ( int k= 0;  k< K; k++)
+        {
+            temp +=pi_k[k] * unit_gaussian(data + i * 13, mu_k + k * 13, cov_k + k * 13 * 13);
+        }
+        log_likelihood += log(temp);
+    }
+    //log_likelihood += log(temp);
+    /*for (int i = 0; i < K; i++) {
+        for (int j = 0; j < 13; j++) {
+            tmp_mu[j] = mu_k[i * 13 + j];
+        }
+        for (int j = 0; j < 169; j++) {
+            tmp_cov[j] = cov_k[i * 169 + j];
+        }
+
+
+        temp += pi_k[i] * (unit_gaussian(data, tmp_mu, tmp_cov));
+    }*/
+    return log_likelihood;
+
+}
+
 short* openwav(char* filename, int* fsize) {
     FILE* fp = NULL;
     int count = 0;
@@ -538,7 +585,7 @@ float* mfcc_frame(short* signal_frame, float* new_signal, int winlenth, float* w
     return feat_mfcc;
 }
 
-void map_adaptation(float* mfcc, float* mu, float* pi , float* cov, short threshold, short max_iterations, short K, short rf) {
+void map_adaptation_frame(float* mfcc, float* mu, float* pi , float* cov, short threshold, short max_iterations, short K, short rf) {
     float old_likelihood = 9999;
     float new_likelihood = 0;
     short iterations = 0;
@@ -559,7 +606,7 @@ void map_adaptation(float* mfcc, float* mu, float* pi , float* cov, short thresh
         //float* num = (float*)malloc(sizeof(float) * K);
         for ( i = 0; i < K; i++)
         {
-            *(num + i) = *(pi + i) * unit_gaussian(mfcc, *(mu + i), *(cov + i));
+            *(num + i) = *(pi + i) * unit_gaussian(mfcc, mu + i*13, cov + i*13*13);
             sum += *(num + i);
         }
         //float* new_mu = (float*)malloc(sizeof(float) * K * 13);
@@ -585,7 +632,113 @@ void map_adaptation(float* mfcc, float* mu, float* pi , float* cov, short thresh
                 *(mu + i * 13 * j) = temp + adaption * (*(new_mu + i * 13 + j));
             }
         }
-        new_likelihood = calculate_likelihood(13, K, mfcc, mu, cov, pi);
+        //new_likelihood = calculate_likelihood(K, mfcc, mu, cov, pi);
+    }
+
+    free(new_mu);
+    free(num);
+    //save_model("map", mu, cov, pi);
+}
+
+void map_adaptation(char* mfcc_file, int frames, float* mu, float* pi, float* cov, short threshold, short max_iterations, short K, short rf) {
+    //读取mfcc
+    float* mfcc = (float*)malloc(sizeof(float) * 13 * frames);
+    FILE* fp = NULL;
+    fp = fopen(mfcc_file, "rb");
+    fread(mfcc, sizeof(float), 13 * frames, fp);
+
+    //
+    float old_likelihood = 9999;
+    float new_likelihood = 0;
+    short iterations = 0;
+
+    float* num = (float*)malloc(sizeof(float) * K);
+    float* new_mu = (float*)malloc(sizeof(float) * K * 13);
+    float* z_n_k = (float*)malloc(sizeof(float) * K * frames);
+    float* n_k = (float*)malloc(sizeof(float) * frames);
+
+    int i, j;
+    float* sum = (float*)malloc(sizeof(float) * frames);
+    float* temp = (float*)malloc(sizeof(float) * 13);
+    float* adaptation_coefficient = (float*)malloc(sizeof(float) * K);
+    float adaption = 0.;
+    float temp2 = 0.;
+
+    while (fabs((double)old_likelihood - (double)new_likelihood) > threshold && iterations < max_iterations)
+    {
+        iterations += 1;
+        old_likelihood = new_likelihood;
+        printf("epoch:%d\n", iterations);
+
+        for (j = 0; j < frames; j++)
+        {
+            *(sum + j) = 0.0;
+            for (i = 0; i < K; i++)
+            {
+                *(num + i) = *(pi + i) * unit_gaussian((mfcc + j * 13), mu + i * 13, cov + i * 13 * 13);
+                *(sum + j) += *(num + i);
+            }
+            for (i = 0; i < K; i++)
+            {
+                *(num + i) /= *(sum + j);
+                *(z_n_k + j * 16 + i) = *(num + i);
+            }
+        }
+
+        memset(n_k, 0, sizeof(n_k)*K);
+        for (j = 0; j < K; j++)
+        {
+            for (i = 0; i < frames; i++)
+            {
+                *(n_k + j) += *(z_n_k + j + i * 16);
+            }
+            *(n_k + j) += 1e-10;
+        }
+
+
+
+        for (i = 0; i < K; i++)
+        {
+            for (j = 0; j < 13; j++)
+            {
+                *(temp + j) = 0.0;
+            }
+
+            for (j = 0; j < frames; j++)
+            {
+                for (int k = 0; k < 13; k++)
+                {
+                    *(temp + k) += *(z_n_k + j * 16 + i) * (*(mfcc + j * 13 + k));
+                }
+            }
+
+            for (j = 0; j < 13; j++)
+            {
+                *(new_mu + i * 13 + j) = *(temp + j) / (*(n_k + i));
+            }
+        }
+
+
+        for (i = 0; i < K; i++)
+        {
+            *(adaptation_coefficient + i) = (*(n_k + i)) / ((*(n_k + i)) + rf);
+        }
+
+
+
+
+        for (i = 0; i < K; i++)
+        {
+            for (j = 0; j < 13; j++)
+            {
+
+                temp2 = (1 - (*(adaptation_coefficient + i))) * (*(mu + i * 13 + j));
+
+                *(mu + i * 13 + j) = temp2 + (*(adaptation_coefficient + i)) * (*(new_mu + i * 13 + j));
+            }
+        }
+        new_likelihood = calculate_likelihood(frames, K, mfcc, mu, cov, pi);
+        printf("calculate likelihood:%f", new_likelihood);
     }
 
     free(new_mu);
@@ -652,6 +805,66 @@ float test_model(short start, short end, char* ubm_filepath, char* map_filepath,
 //}
 //
 
+//void main() {
+//    printf("program start!\n");
+//    //读音频=============================================================
+//    char* filename = "testwav";
+//    short* sig;
+//    int fsize;
+//    sig = openwav(filename, &fsize);
+//    //printf("%d\n", sig[0]);
+//    
+//    //单帧处理 fsize=15360 
+//    int frames = 0;
+//    short flag = 0;
+//    fsize -= 240;
+//    frames = fsize / 160;
+//    flag = fsize % 160;
+//
+//    if (flag) {
+//        frames += 1;
+//    }
+//    int start = 0, i, j;
+//    int winlength = 400;
+//    short last_point = 0;
+//    short* sig_frame;
+//    float* new_signal;
+//    float* feat = NULL;
+//    sig_frame = (short*)malloc(sizeof(short) * 400);
+//    new_signal = (float*)malloc(sizeof(float) * 400);
+//
+//    FILE* fp = NULL;
+//    fp = fopen("mfcc", "wb");
+//    float* mu = (float*)malloc(sizeof(float) * 208);
+//    float* cov = (float*)malloc(sizeof(float) * 2704);
+//    float* pi = (float*)malloc(sizeof(float) * 16);
+//    load_model("ubm", mu, cov, pi);
+//    for (i = 0; i < frames; i++)
+//    {
+//        if (i > 0) {
+//            last_point = *(sig + start - 1);
+//        }
+//        for (j = 0; j < winlength; j++)
+//        {
+//            *(sig_frame + j) = *(sig + start + j);
+//        }
+//        if (i == frames - 1) {
+//            for (j = 0; j < flag; j++)
+//            {
+//                *(sig_frame + winlength - flag + j) = (short)0;
+//            }
+//        }
+//        start += 160;
+//        feat = mfcc_frame(sig_frame, new_signal, winlength, NULL, last_point);
+//        fwrite(feat, sizeof(float), 13, fp);
+//        //map_adaptation_frame(feat, mu, pi, cov, 1, 10, 16, 1);
+//    }
+//    save_model("map", mu, cov, pi);
+//
+//    printf("program end!\n");
+//    return;
+//}
+
 void main() {
     printf("program start!\n");
     //读音频=============================================================
@@ -660,7 +873,7 @@ void main() {
     int fsize;
     sig = openwav(filename, &fsize);
     //printf("%d\n", sig[0]);
-    
+
     //单帧处理 fsize=15360 
     int frames = 0;
     short flag = 0;
@@ -682,8 +895,8 @@ void main() {
 
     FILE* fp = NULL;
     fp = fopen("mfcc", "wb");
-    float* mu = (float*)malloc(sizeof(float) * 208);
-    float* cov = (float*)malloc(sizeof(float) * 2704);
+    float* mu = (float*)malloc(sizeof(float) * 16 * 13);
+    float* cov = (float*)malloc(sizeof(float) * 16 * 13 * 13);
     float* pi = (float*)malloc(sizeof(float) * 16);
     load_model("ubm", mu, cov, pi);
     for (i = 0; i < frames; i++)
@@ -703,13 +916,11 @@ void main() {
         }
         start += 160;
         feat = mfcc_frame(sig_frame, new_signal, winlength, NULL, last_point);
-        fwrite(mfcc, sizeof(float), 13, fp);
-        map_adaptation(feat, mu, pi, cov, 1, 10, 16, 1);
-       /* if (i == 93) {
-            printf("1");
-        }*/
+        fwrite(feat, sizeof(float), 13, fp);
     }
-    save_model("map", mu, cov, pi);
+    fclose(fp);
+    map_adaptation("mfcc", frames, mu, pi, cov, 1, 100, 16, 16);
+    //save_model("map", mu, cov, pi);
 
     printf("program end!\n");
     return;

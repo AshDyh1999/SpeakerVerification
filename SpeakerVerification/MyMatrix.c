@@ -312,7 +312,7 @@ Matrix LUInverse_Matrix(Matrix mat)
 		L->data[i][0] = mat->data[i][0] / U->data[0][0];
 		L->data[i][i] = 1.0;
 	}
-	double sum_u = 0, sum_l = 0;
+	float sum_u = 0, sum_l = 0;
 	//　分别计算Ｕ和Ｌ的第２到ｎ行、列元素
 	for (int k = 1; k < n; k++) {
 		// 求U，U矩阵从第２行迭代到第n行，且U矩阵先于L矩阵一个节拍
@@ -330,14 +330,14 @@ Matrix LUInverse_Matrix(Matrix mat)
 			L->data[i][k] = (mat->data[i][k] - sum_l) / U->data[k][k];
 		}
 	}
-	Show_Matrix(U, "U");
-	Show_Matrix(L, "L");
+	//Show_Matrix(U, "U");
+	//Show_Matrix(L, "L");
 	// 分别求下三角矩阵Ｌ和上三角矩阵Ｕ的逆矩阵
 	Matrix L_, U_;
 	L_ = Create_Matrix(n, n);
 	U_ = Create_Matrix(n, n);
 	// 求矩阵Ｕ的逆
-	double sum_u_;
+	float sum_u_;
 	for (int i = 0; i < n; i++) {
 		U_->data[i][i] = 1.0 / U->data[i][i];// 对角线元素的值直接取倒数
 		for (int j = i - 1; j >= 0; j--) {
